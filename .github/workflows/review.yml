@@ -18,18 +18,28 @@ jobs:
 
     steps:
       - name: Checklist
-        uses: elementary/action-appcenter-review-checklist@v1.0.0
+        uses: elementary/action-appcenter-review-checklist@v1.0.2
         with:
+          token: ${{ secrets.GIT_USER_TOKEN }}
           body: |
             ## Review Checklist
 
             - [ ] App opens
             - [ ] Does what it says
-            - [ ] Matches description in AppData
-            - [ ] Matches screenshot
-            - [ ] AppData custom colors are contrasty
+            - [ ] Categories match
+            
+            ### AppData
             - [ ] Name is unique and non-confusing
-            - [ ] Uses elementary Flatpak runtime
+            - [ ] Matches description
+            - [ ] Matches screenshot
+            - [ ] Launchable tag with matching ID
+            - [ ] Release tag with matching version and YYYY-MM-DD date
+            - [ ] Custom colors meet WCAG A contrast or greater
+            - [ ] OARS info matches
+            
+            ### Flatpak
+            - [ ] Uses elementary runtime
+            - [ ] Sandbox permissions are reasonable
 
   parse:
     name: Parse
@@ -43,38 +53,51 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Parse
         id: parse
-        uses: elementary/action-appcenter-review-parse@v1.0.1
+        uses: elementary/action-appcenter-review-parse@v1.1.1
         with:
           regex: |
-            applications\/(?<rdnn>[a-zA-Z0-9\.\-]+)\.json
+            applications\/(?<rdnn>[a-zA-Z0-9\.\-\_]+)\.json
 
   build:
     name: Build
     runs-on: ubuntu-latest
     needs: parse
 
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+      # Don't fail the whole workflow if one architecture fails
+      fail-fast: false
+
     container:
-      image: ghcr.io/elementary/flatpak-platform/runtime:daily
+      image: ghcr.io/elementary/flatpak-platform/runtime:7.1-${{ matrix.arch }}
       options: --privileged
 
     steps:
       - name: Checkout
         run: |
+          git config --global --add safe.directory /__w/appcenter-reviews/appcenter-reviews
           git clone ${{ needs.parse.outputs.source }} .
           git checkout ${{ needs.parse.outputs.commit }}
 
       - name: Manifest
         id: manifest
-        uses: elementary/action-appcenter-review-find-manifest@v1.0.3
+        uses: elementary/action-appcenter-review-find-manifest@v1.4.0
         with:
           rdnn: ${{ needs.parse.outputs.rdnn }}
 
+      - name: Set up QEMU for aarch64 emulation
+        if: ${{ matrix.arch != 'x86_64' }}
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: arm64
+
       - name: Build
-        uses: bilelmoussaoui/flatpak-github-actions/flatpak-builder@master
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           bundle: ${{ needs.parse.outputs.rdnn }}.flatpak
           manifest-path: ${{ steps.manifest.outputs.manifest }}
@@ -83,3 +106,4 @@ jobs:
           repository-url: https://flatpak.elementary.io/repo.flatpakrepo
           branch: stable
           cache-key: "flatpak-builder-${{ github.sha }}"
+          arch: ${{ matrix.arch }}
